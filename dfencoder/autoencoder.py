@@ -115,10 +115,10 @@ class CompleteLayer(torch.nn.Module):
             act = self.activation
         activations = {
             'leaky_relu':torch.nn.functional.leaky_relu,
-            'relu':torch.relu,
-            'sigmoid':torch.sigmoid,
-            'tanh':torch.tanh,
-            'selu':torch.selu,
+            'relu':torch.nn.functional.relu,
+            'sigmoid':torch.nn.functional.sigmoid,
+            'tanh':torch.nn.functional.tanh,
+            'selu':torch.nn.functional.selu,
             'hardtanh':torch.nn.functional.hardtanh,
             'relu6':torch.nn.functional.relu6,
             'elu':torch.nn.functional.elu,
