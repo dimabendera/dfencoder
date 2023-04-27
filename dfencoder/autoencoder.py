@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from lion_pytorch import Lion
 from copy import deepcopy
 import gc
 
@@ -162,7 +163,7 @@ class AutoEncoder(torch.nn.Module):
             lr=0.01,
             batch_size=256,
             eval_batch_size=1024,
-            optimizer='adam',
+            optimizer='adam_lion',
             amsgrad=False,
             momentum=0,
             betas=(0.9, 0.999),
@@ -466,7 +467,12 @@ class AutoEncoder(torch.nn.Module):
 
         lr = self.lr
         params = self.parameters()
-        if self.optimizer == 'adam':
+        if self.optimizer == 'adam_lion':
+            return Lion(model.parameters(), 
+                        lr=self.lr, 
+                        weight_decay=self.weight_decay,
+                        betas=self.betas)
+        elif self.optimizer == 'adam':
             return torch.optim.Adam(
                 params,
                 lr=self.lr,
