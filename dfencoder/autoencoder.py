@@ -468,7 +468,7 @@ class AutoEncoder(torch.nn.Module):
         lr = self.lr
         params = self.parameters()
         if self.optimizer == 'adam_lion':
-            return Lion(model.parameters(), 
+            return Lion(params, 
                         lr=self.lr, 
                         weight_decay=self.weight_decay,
                         betas=self.betas)
