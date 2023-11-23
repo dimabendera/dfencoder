@@ -152,18 +152,18 @@ class AutoEncoder(torch.nn.Module):
             encoder_activations=None,
             decoder_activations=None,
             label_col=None,
-            classifier_layers=[128,],
-            categorical_weight = 1.0,
-            binary_weight = 1.0,
-            numeric_weight = 1.0,
-            classifier_weight = 1.0,
+            classifier_layers=(128,),
+            categorical_weight=1.0,
+            binary_weight=1.0,
+            numeric_weight=1.0,
+            classifier_weight=1.0,
             activation='relu',
             min_cats=10,
             swap_p=.15,
             lr=0.01,
             batch_size=256,
             eval_batch_size=1024,
-            optimizer='adam_lion',
+            optimizer='sgd',
             amsgrad=False,
             momentum=0,
             betas=(0.9, 0.999),
@@ -181,10 +181,10 @@ class AutoEncoder(torch.nn.Module):
             n_megabatches=1,
             scaler='standard',
             *args,
-            **kwargs
-        ):
+            **kwargs):
         super(AutoEncoder, self).__init__(*args, **kwargs)
         self.numeric_fts = OrderedDict()
+        self.location_fts = OrderedDict()
         self.binary_fts = OrderedDict()
         self.categorical_fts = OrderedDict()
         self.cyclical_fts = OrderedDict()
@@ -220,12 +220,12 @@ class AutoEncoder(torch.nn.Module):
         self.optimizer = optimizer
         self.lr = lr
         self.lr_decay = lr_decay
-        self.amsgrad=amsgrad
-        self.momentum=momentum
-        self.betas=betas
-        self.dampening=dampening
-        self.weight_decay=weight_decay
-        self.nesterov=nesterov
+        self.amsgrad = amsgrad
+        self.momentum = momentum
+        self.betas = betas
+        self.dampening = dampening
+        self.weight_decay = weight_decay
+        self.nesterov = nesterov
         self.optim = None
         self.progress_bar = progress_bar
 
@@ -251,43 +251,44 @@ class AutoEncoder(torch.nn.Module):
 
     def get_scaler(self, name):
         scalers = {
-            'standard':StandardScaler,
-            'gauss_rank':GaussRankScaler,
-            None:NullScaler,
-            'none':NullScaler
+            'standard': StandardScaler,
+            'gauss_rank': GaussRankScaler,
+            None: NullScaler,
+            'none': NullScaler
         }
         return scalers[name]
 
     def init_numeric(self, df):
         dt = df.dtypes
+        dn = df.columns
         numeric = []
-        numeric += list(dt[dt==int].index)
-        numeric += list(dt[dt==float].index)
+        numeric += list(dt[(dt == int) & (dn != "latitude") & (dn != "longitude")].index)
+        numeric += list(dt[(dt == float) & (dn != "latitude") & (dn != "longitude")].index)
 
         if isinstance(self.scaler, str):
-            scalers = {ft:self.scaler for ft in numeric}
+            scalers = {ft: self.scaler for ft in numeric}
         elif isinstance(self.scaler, dict):
             scalers = self.scaler
 
         for ft in numeric:
             Scaler = self.get_scaler(scalers.get(ft, 'gauss_rank'))
             feature = {
-                'mean':df[ft].mean(),
-                'std':df[ft].std(),
-                'scaler':Scaler()
+                'mean': df[ft].mean(),
+                'std': df[ft].std(),
+                'scaler': Scaler()
             }
             feature['scaler'].fit(df[ft][~df[ft].isna()].values)
             self.numeric_fts[ft] = feature
 
         for ft in self.cyclical_fts:
-            #we'll scale only the raw timestamp values
-            #for cyclical features
+            # we'll scale only the raw timestamp values
+            # for cyclical features
             Scaler = self.get_scaler(scalers.get(ft, 'gauss_rank'))
             data = df[ft].astype(int).astype(float)
             feature = {
-                'mean':data.mean(),
-                'std':data.std(),
-                'scaler':Scaler()
+                'mean': data.mean(),
+                'std': data.std(),
+                'scaler': Scaler()
             }
             feature['scaler'].fit(data[~data.isna()].values)
             self.cyclical_fts[ft] = feature
@@ -300,13 +301,12 @@ class AutoEncoder(torch.nn.Module):
         for name, item in zip(dt.index, dt):
             if item == 'object':
                 objects.append(name)
-        #objects = list(dt[dt==pd.Categorical].index)
         for ft in objects:
             feature = {}
             vl = df[ft].value_counts()
             if len(vl) < 3:
-                #if there are less than 3 categories,
-                #treat as binary ft.
+                # if there are less than 3 categories,
+                # treat as binary ft.
                 feature['cats'] = list(vl.index)
                 self.binary_fts[ft] = feature
                 continue
@@ -316,7 +316,7 @@ class AutoEncoder(torch.nn.Module):
 
     def init_binary(self, df):
         dt = df.dtypes
-        binaries = list(dt[dt==bool].index)
+        binaries = list(dt[dt == bool].index)
         if self.label_col is not None:
             binaries.remove(self.label_col)
             binaries.remove(self.label_col + "__was_na")
@@ -324,7 +324,7 @@ class AutoEncoder(torch.nn.Module):
             feature = self.binary_fts[ft]
             for i, cat in enumerate(feature['cats']):
                 feature[cat] = bool(i)
-        #these are the 'true' binary features
+        # these are the 'true' binary features
         for ft in binaries:
             feature = dict()
             feature['cats'] = [True, False]
@@ -334,13 +334,11 @@ class AutoEncoder(torch.nn.Module):
 
         self.bin_names = list(self.binary_fts.keys())
 
-
     def init_cyclical(self, df):
         dt = df.dtypes
-        cyc = list(dt[dt=='datetime64[ns]'].index)
+        cyc = list(dt[dt == 'datetime64[ns]'].index)
         for ft in cyc:
-            feature = dict()
-            #just keeping track of names
+            # just keeping track of names
             self.cyclical_fts[ft] = None
             self.num_names += [
                 ft,
@@ -350,10 +348,19 @@ class AutoEncoder(torch.nn.Module):
                 ft + '_sin_doy', ft + '_cos_doy'
                 ]
 
+    def init_location(self, df):
+        dt = df.dtypes
+        dn = df.columns
+        numeric = []
+        numeric += list(dt[(dt == int) & (dn == "latitude") & (dn == "longitude")].index)
+        numeric += list(dt[(dt == float) & (dn == "latitude") & (dn == "longitude")].index)
+        #self.location_fts = []
+
     def init_features(self, df):
         if self.label_col is not None:
             df = self.coerce_label_col(df)
         self.init_cyclical(df)
+        self.init_location(df)
         self.init_numeric(df)
         self.init_cats(df)
         self.init_binary(df)
@@ -367,10 +374,10 @@ class AutoEncoder(torch.nn.Module):
         return df
 
     def build_inputs(self):
-        #will compute total number of inputs
+        # will compute total number of inputs
         input_dim = 0
 
-        #create categorical variable embedding layers
+        # create categorical variable embedding layers
         for ft in self.categorical_fts:
             feature = self.categorical_fts[ft]
             n_cats = len(feature['cats']) + 1
@@ -378,10 +385,10 @@ class AutoEncoder(torch.nn.Module):
             embed_layer = torch.nn.Embedding(n_cats, embed_dim)
             feature['embedding'] = embed_layer
             self.add_module(f'{ft} embedding', embed_layer)
-            #track embedding inputs
+            # track embedding inputs
             input_dim += embed_dim
 
-        #include numeric and binary fts
+        # include numeric and binary fts
         input_dim += len(self.numeric_fts)
         input_dim += len(self.binary_fts)
 
@@ -413,32 +420,32 @@ class AutoEncoder(torch.nn.Module):
         for ft in self.cyclical_fts:
             col = df[ft]
 
-            #handle raw timestamp as if it were numeric feature
+            # handle raw timestamp as if it were numeric feature
             feature = self.cyclical_fts[ft]
             col = col.fillna(pd.to_datetime(feature['mean']))
             trans_col = feature['scaler'].transform(col.values)
             trans_col = pd.Series(index=df.index, data=trans_col)
             output_df[ft] = trans_col
 
-            #get time of day features
+            # get time of day features
             second_of_day = col.dt.hour * 60 * 60 + col.dt.minute * 60 + col.dt.second
             period = 24 * 60 * 60
             output_df[ft+'_sin_tod'] = np.sin(second_of_day/(period/(2*np.pi))).values
             output_df[ft+'_cos_tod'] = np.cos(second_of_day/(period/(2*np.pi))).values
 
-            #get day of week features
+            # get day of week features
             day_of_week = col.dt.dayofweek
             period = 7
             output_df[ft+'_sin_dow'] = np.sin(day_of_week/(period/(2*np.pi))).values
             output_df[ft+'_cos_dow'] = np.cos(day_of_week/(period/(2*np.pi))).values
 
-            #get day of month features
+            # get day of month features
             day_of_month = col.dt.day
             period = 31 #approximate period
             output_df[ft+'_sin_dom'] = np.sin(day_of_month/(period/(2*np.pi))).values
             output_df[ft+'_cos_dom'] = np.cos(day_of_month/(period/(2*np.pi))).values
 
-            #get day of year
+            # get day of year
             day_of_year = col.dt.dayofyear
             period = 365
             output_df[ft+'_sin_doy'] = np.sin(day_of_year/(period/(2*np.pi))).values
@@ -501,11 +508,11 @@ class AutoEncoder(torch.nn.Module):
         if self.verbose:
             print('Building model...')
 
-        #get metadata from features
+        # get metadata from features
         self.init_features(df)
         input_dim = self.build_inputs()
 
-        #construct a canned denoising autoencoder architecture
+        # construct a canned denoising autoencoder architecture
         if self.encoder_layers is None:
             self.encoder_layers = [int(4*input_dim) for _ in range(3)]
 
@@ -531,8 +538,8 @@ class AutoEncoder(torch.nn.Module):
             layer = CompleteLayer(
                 input_dim,
                 dim,
-                activation = activation,
-                dropout = self.encoder_dropout[i]
+                activation=activation,
+                dropout=self.encoder_dropout[i]
             )
             input_dim = dim
             self.encoder.append(layer)
@@ -544,17 +551,17 @@ class AutoEncoder(torch.nn.Module):
             layer = CompleteLayer(
                 input_dim,
                 dim,
-                activation = activation,
-                dropout = self.decoder_dropout[i]
+                activation=activation,
+                dropout=self.decoder_dropout[i]
             )
             input_dim = dim
             self.decoder.append(layer)
             self.add_module(f'decoder_{i}', layer)
 
-        #set up predictive outputs
+        # set up predictive outputs
         self.build_outputs(dim)
 
-        #get optimizer
+        # get optimizer
         self.optim = self.build_optimizer()
         if self.lr_decay is not None:
             self.lr_decay = torch.optim.lr_scheduler.ExponentialLR(self.optim, self.lr_decay)
@@ -567,11 +574,11 @@ class AutoEncoder(torch.nn.Module):
             self.logger = IpynbLogger(fts=fts)
         elif self.logger == 'tensorboard':
             self.logger = TensorboardXLogger(logdir=self.logdir, run=self.run, fts=fts)
-        #returns a copy of preprocessed dataframe.
+        # returns a copy of preprocessed dataframe.
         self.to(self.device)
 
         if self.label_col is not None:
-            #build classifier
+            # build classifier
             inp_dim = self.get_deep_stack_features(df.sample(2)).shape[1]
             layer = CompleteLayer(inp_dim, self.cls_layers_shape[0])
             self.cls_layers.append(layer)
@@ -766,7 +773,7 @@ class AutoEncoder(torch.nn.Module):
 
         if self.optim is None:
             self.build_model(df)
-        if self.n_megabatches==1:
+        if self.n_megabatches == 1:
             df = self.prepare_df(df)
 
         if val is not None:
